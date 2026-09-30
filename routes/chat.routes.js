@@ -12,6 +12,7 @@ import {
   removeMember,
   renameGroup,
   sendAnonymousFriendRequest,
+  acceptFriendRequest,
   sendAttachments,
   sendMessage,
   suggestMessages,
@@ -39,6 +40,7 @@ chatRouter.post("/sendMessage", sendMessage);
 chatRouter.use(isAuthenticated);
 
 chatRouter.put("/anonymous-request", sendAnonymousFriendRequest);
+chatRouter.put("/accept-friend-request", acceptFriendRequest);
 
 chatRouter.get("/", getMyChats);
 

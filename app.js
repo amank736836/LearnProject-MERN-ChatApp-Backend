@@ -10,6 +10,7 @@ import { v4 as uuid } from "uuid";
 import { isSocketAuthenticated } from "./middlewares/auth.js";
 import { errorMiddleware, TryCatch } from "./middlewares/error.js";
 import messageModel from "./models/message.models.js";
+import chatModel from "./models/chat.models.js";
 import adminRouter from "./routes/admin.routes.js";
 import chatRouter from "./routes/chat.routes.js";
 import userRouter from "./routes/user.routes.js";
@@ -177,9 +178,17 @@ io.on(
   TryCatch((socket) => {
     const user = socket.user;
 
-    userSocketIDs.set(user._id.toString(), socket.id);
+    const userId = user._id.toString();
+    const sockets = userSocketIDs.get(userId) || new Set();
+    sockets.add(socket.id);
+    userSocketIDs.set(userId, sockets);
 
     socket.on(NEW_MESSAGE, async ({ chatId, message, members, replyTo }) => {
+      const chat = await chatModel.findById(chatId).select("members").lean();
+      if (!chat || !chat.members.some((member) => member.toString() === userId)) {
+        return socket.emit("error", "You are not a member of this chat");
+      }
+      const authorizedMembers = chat.members.map((member) => member.toString());
       const messageForRealTime = {
         _id: uuid(),
         attachments: [],
@@ -211,7 +220,7 @@ io.on(
           : undefined,
       };
 
-      const membersSocket = getSockets(members);
+      const membersSocket = getSockets(authorizedMembers);
 
       io.to(membersSocket).emit(NEW_MESSAGE, {
         chatId,
@@ -260,7 +269,9 @@ io.on(
     });
 
     socket.on("disconnect", () => {
-      userSocketIDs.delete(user._id.toString());
+      const sockets = userSocketIDs.get(userId);
+      sockets?.delete(socket.id);
+      if (!sockets?.size) userSocketIDs.delete(userId);
       onlineUsers.delete(user._id.toString());
       socket.broadcast.emit(ONLINE_USERS, {
         onlineUsers: Array.from(onlineUsers),

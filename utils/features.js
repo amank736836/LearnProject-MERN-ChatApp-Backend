@@ -31,7 +31,7 @@ const sendToken = (res, user, code, message) => {
 
   return res
     .status(code)
-    .cookie("StealthyNoteToken", token, cookieOptions)
+    .cookie(process.env.STEALTHY_NOTE_TOKEN_NAME, token, cookieOptions)
     .json({
       success: true,
       message,
@@ -40,7 +40,7 @@ const sendToken = (res, user, code, message) => {
 };
 
 const getSockets = (users = []) => {
-  return users.map((user) => userSocketIDs.get(user.toString()));
+  return users.flatMap((user) => [...(userSocketIDs.get(user.toString()) || [])]);
 };
 
 const emitEvent = (req, event, users, data) => {
@@ -95,7 +95,18 @@ const uploadFilesToCloudinary = async (files = []) => {
   }
 };
 
-const deleteFilesFromCloudinary = async (publicIds = []) => {};
+const deleteFilesFromCloudinary = async (publicIds = []) => {
+  const ids = publicIds.flat(Infinity).filter(Boolean);
+  await Promise.all(ids.map((publicId) => new Promise((resolve, reject) => {
+    cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true }, (error, result) => {
+      if (error) return reject(error);
+      if (result?.result === "not found") {
+        return cloudinary.uploader.destroy(publicId, { resource_type: "raw", invalidate: true }, (rawError) => rawError ? reject(rawError) : resolve());
+      }
+      resolve();
+    });
+  })));
+};
 
 const sendForgotPasswordEmail = async ({
   email,

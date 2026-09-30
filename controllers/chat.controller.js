@@ -486,13 +486,14 @@ const renameGroup = TryCatch(async (req, res, next) => {
     return next(new ErrorHandler(`Only creator can rename group`, 403));
   }
 
+  const previousName = chat.name;
   chat.name = name;
 
   await chat.save();
 
   messageModel.create({
     chat: chatId,
-    content: `Group name changed from ${chat.name} to ${name}`,
+    content: `Group name changed from ${previousName} to ${name}`,
     sender: req.userId,
   });
 
@@ -739,7 +740,7 @@ const storeAndDeliverMessage = async ({
   }
 
   let chatId = null;
-  let targetMembers = [user._id];
+  let targetMembers = [];
   let isAnonymousForMessage = true;
 
   if (sender?._id && !forceAnonymous) {
@@ -763,28 +764,40 @@ const storeAndDeliverMessage = async ({
       isAnonymousForMessage = false;
     }
   } else {
-    // Keep board messages in owner's anonymous inbox chat.
-    let userChat = await chatModel.findById(user._id);
-
-    if (!userChat) {
-      userChat = await chatModel.findOne({
+    if (sender?._id) {
+      // Create a new anonymous chat
+      const newChat = await chatModel.create({
+        name: "Anonymous",
         groupChat: false,
-        members: [user._id],
-        name: `${user.username} - Messages`,
+        members: [sender._id],  // Only add sender initially
+        isAnonymous: true,     // Mark as anonymous chat
       });
-    }
+      chatId = newChat._id;
+      targetMembers = [sender._id];
+    } else {
+      // Keep board messages in owner's anonymous inbox chat
+      let userChat = await chatModel.findById(user._id);
 
-    if (!userChat) {
-      userChat = await chatModel.create({
-        _id: user._id,
-        name: `${user.username} - Messages`,
-        groupChat: false,
-        members: [user._id],
-      });
-    }
+      if (!userChat) {
+        userChat = await chatModel.findOne({
+          groupChat: false,
+          members: [user._id],
+          name: `${user.username} - Messages`,
+        });
+      }
 
-    chatId = userChat._id;
-    targetMembers = [user._id];
+      if (!userChat) {
+        userChat = await chatModel.create({
+          _id: user._id,
+          name: `${user.username} - Messages`,
+          groupChat: false,
+          members: [user._id],
+        });
+      }
+
+      chatId = userChat._id;
+      targetMembers = [user._id];
+    }
     isAnonymousForMessage = true;
   }
 
@@ -886,9 +899,11 @@ const sendAnonymousFriendRequest = TryCatch(async (req, res, next) => {
     });
   }
 
+  // Add chatId to the request
   await requestModel.create({
     sender: req.userId,
     receiver: targetUserId,
+    chatId: message.chat, // Store chat ID in request
   });
 
   emitEvent(req, NEW_REQUEST, [targetUserId], "New friend request received");
@@ -896,6 +911,59 @@ const sendAnonymousFriendRequest = TryCatch(async (req, res, next) => {
   return res.status(200).json({
     success: true,
     message: "Friend request sent successfully",
+  });
+});
+
+// Accept friend request and add user to chat
+const acceptFriendRequest = TryCatch(async (req, res, next) => {
+  const { requestId } = req.body;
+
+  if (!requestId) {
+    return next(new ErrorHandler("Request ID is required", 400));
+  }
+
+  const request = await requestModel.findById(requestId);
+
+  if (!request) {
+    return next(new ErrorHandler("Request not found", 404));
+  }
+
+  if (request.receiver.toString() !== req.userId.toString()) {
+    return next(new ErrorHandler("Unauthorized to accept this request", 403));
+  }
+
+  const [chat, sender] = await Promise.all([
+    chatModel.findById(request.chatId),
+    userModel.findById(request.sender),
+  ]);
+
+  if (!chat) {
+    return next(new ErrorHandler("Chat not found", 404));
+  }
+
+  // Add receiver to chat members
+  if (!chat.members.includes(req.userId)) {
+    chat.members.push(req.userId);
+    
+    // Update chat name if it's anonymous
+    if (chat.isAnonymous && sender) {
+      chat.name = `${sender.name}`;
+      chat.isAnonymous = false; // Convert to normal chat
+    }
+    
+    await chat.save();
+  }
+
+  // Delete the request
+  await requestModel.findByIdAndDelete(requestId);
+
+  // Notify both users about the new chat
+  emitEvent(req, REFETCH_CHATS, chat.members);
+
+  return res.status(200).json({
+    success: true,
+    message: "Friend request accepted",
+    chatId: chat._id,
   });
 });
 
@@ -1167,6 +1235,7 @@ export {
   removeMember,
   renameGroup,
   sendAnonymousFriendRequest,
+  acceptFriendRequest,
   sendAttachments,
   sendMessage,
   suggestMessages,

@@ -1,5 +1,5 @@
 import { compare } from "bcrypt";
-import { cookieOptions } from "../app.js";
+import { cookieOptions, STEALTHY_NOTE_TOKEN_NAME } from "../app.js";
 import { ErrorHandler, TryCatch } from "../middlewares/error.js";
 import chatModel from "../models/chat.models.js";
 import messageModel from "../models/message.models.js";
@@ -372,7 +372,7 @@ const getMyProfile = TryCatch(async (req, res, next) => {
 });
 
 const logout = TryCatch(async (req, res, next) => {
-  res.cookie("StealthyNoteToken", null, {
+  res.cookie(STEALTHY_NOTE_TOKEN_NAME, null, {
     ...cookieOptions,
     maxAge: 0,
   });
