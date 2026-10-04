@@ -7,6 +7,13 @@ const messageSchema = new Schema(
       ref: "User",
       required: true,
     },
+    // Set only for private AI answers: visible solely to this user.
+    privateTo: {
+      type: Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     chat: {
       type: Types.ObjectId,
       ref: "Chat",

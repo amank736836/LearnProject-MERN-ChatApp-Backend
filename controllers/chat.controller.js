@@ -23,6 +23,8 @@ import {
   getSockets,
   uploadFilesToCloudinary,
 } from "../utils/features.js";
+import { markBoardQuestionAnswered } from "../utils/boardAnswers.js";
+import { askNvidiaWithContext } from "../utils/nvidiaAI.js";
 
 const getTokenUserId = (decodedData) => decodedData?.id || decodedData?._id;
 
@@ -574,19 +576,20 @@ const getMessages = TryCatch(async (req, res, next) => {
     return next(new ErrorHandler("User not in the chat", 400));
   }
 
+  const visibilityFilter = {
+    chat: chatId,
+    $or: [{ privateTo: null }, { privateTo: req.userId }],
+  };
+
   const [messages, totalMessagesCount] = await Promise.all([
     messageModel
-      .find({
-        chat: chatId,
-      })
+      .find(visibilityFilter)
       .sort({ createdAt: -1 })
       .limit(limit)
       .skip(skip)
       .populate("sender", "name")
       .lean(),
-    messageModel.countDocuments({
-      chat: chatId,
-    }),
+    messageModel.countDocuments(visibilityFilter),
   ]);
 
   if (!chat.groupChat && chat.members.length === 1) {
@@ -669,6 +672,7 @@ const normalizeQuestionLegacy = (value = "") =>
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
+
 
 const GLOBAL_SEED_QUESTIONS = [
   "What is something small that made your day better recently?",
@@ -818,6 +822,15 @@ const storeAndDeliverMessage = async ({
   };
 
   const message = await messageModel.create(messageForDB);
+
+  // If this reply answers a board question, drop it from the priority queue.
+  if ((replyTo?.content || "").trim() && (content || "").trim()) {
+    markBoardQuestionAnswered({
+      chatId,
+      replyContent: replyTo.content,
+      answerContent: content,
+    }).catch(() => {});
+  }
 
   const messageForRealTime = {
     ...messageForDB,
@@ -1222,6 +1235,208 @@ const sendMessage = TryCatch(async (req, res, next) => {
   });
 });
 
+const AI_USERNAME = "ai_assistant";
+
+const getAiUser = async () => {
+  const existing = await userModel.findOne({ username: AI_USERNAME }).lean();
+  if (existing) return existing;
+
+  try {
+    const created = await userModel.create({
+      name: "AI Assistant",
+      email: "ai.assistant@stealthynote.local",
+      username: AI_USERNAME,
+      password: `ai-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      avatar: {
+        public_id: "ai_assistant",
+        url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🤖%3C/text%3E%3C/svg%3E",
+      },
+    });
+    return created.toObject();
+  } catch {
+    return userModel.findOne({ username: AI_USERNAME }).lean();
+  }
+};
+
+/**
+ * Ask-AI with chat context. mode "shared" saves + broadcasts the reply to
+ * everyone; anything else saves it privately (visible only to the asker,
+ * surviving reloads) and emits it to the asker alone.
+ */
+const askAi = TryCatch(async (req, res, next) => {
+  const { chatId, question, mode = "private" } = req.body;
+  const trimmedQuestion = (question || "").trim();
+
+  if (!chatId) return next(new ErrorHandler("Chat ID is required", 400));
+  if (!trimmedQuestion) return next(new ErrorHandler("Question is required", 400));
+
+  const chat = await chatModel.findById(chatId);
+
+  if (!chat) return next(new ErrorHandler("Chat not found", 404));
+
+  if (!chat.members.some((member) => String(member) === String(req.userId))) {
+    return next(new ErrorHandler("You are not a member of this chat", 403));
+  }
+
+  if (chat.aiEnabled === false) {
+    return next(new ErrorHandler("AI mode is turned off for this chat", 403));
+  }
+
+  const recentMessages = await messageModel
+    .find({ chat: chatId })
+    .populate("sender", "name")
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .lean();
+
+  const history = recentMessages.reverse().map((msg) => ({
+    senderName: msg?.sender?.name || "Someone",
+    content: msg?.content || "",
+  }));
+
+  const answer = await askNvidiaWithContext({ history, question: trimmedQuestion });
+
+  if (!answer) {
+    return next(new ErrorHandler("AI could not answer right now. Try again.", 502));
+  }
+
+  const aiUser = await getAiUser();
+
+  if (!aiUser) {
+    return next(new ErrorHandler("AI could not answer right now. Try again.", 500));
+  }
+
+  const isPrivate = mode !== "shared";
+
+  const message = await messageModel.create({
+    chat: chatId,
+    content: answer,
+    sender: aiUser._id,
+    ...(isPrivate ? { privateTo: req.userId } : {}),
+  });
+
+  publishAiMessage(
+    req,
+    { chat, answer, message },
+    isPrivate ? [req.userId] : chat.members
+  );
+
+  const notifiedSockets = getSockets(
+    (isPrivate ? [req.userId] : chat.members).map((member) => member.toString())
+  );
+
+  return res.status(200).json({
+    success: true,
+    answer,
+    messageId: message._id,
+    private: isPrivate,
+    realtimeDelivered: notifiedSockets.length > 0,
+  });
+});
+
+/**
+ * Shares a private AI answer with the whole chat: clears its exclusive
+ * visibility and broadcasts it. Accepts either the private message's id
+ * (published as-is) or raw answer text (saved + shared, legacy path).
+ */
+const shareAi = TryCatch(async (req, res, next) => {
+  const { chatId, messageId, answer } = req.body;
+
+  if (!chatId) return next(new ErrorHandler("Chat ID is required", 400));
+
+  const chat = await chatModel.findById(chatId);
+
+  if (!chat) return next(new ErrorHandler("Chat not found", 404));
+
+  if (!chat.members.some((member) => String(member) === String(req.userId))) {
+    return next(new ErrorHandler("You are not a member of this chat", 403));
+  }
+
+  if (chat.aiEnabled === false) {
+    return next(new ErrorHandler("AI mode is turned off for this chat", 403));
+  }
+
+  let message;
+
+  if (messageId) {
+    message = await messageModel.findOne({ _id: messageId, chat: chatId });
+
+    if (!message) return next(new ErrorHandler("Message not found", 404));
+
+    if (String(message.privateTo || "") !== String(req.userId)) {
+      return next(new ErrorHandler("Only your own private AI answer can be shared", 403));
+    }
+
+    message.privateTo = null;
+    await message.save();
+  } else {
+    const trimmedAnswer = (answer || "").trim().slice(0, 1200);
+
+    if (!trimmedAnswer) {
+      return next(new ErrorHandler("Message id or answer text is required", 400));
+    }
+
+    const aiUser = await getAiUser();
+
+    if (!aiUser) {
+      return next(new ErrorHandler("AI is unavailable right now. Try again.", 500));
+    }
+
+    message = await messageModel.create({
+      chat: chatId,
+      content: trimmedAnswer,
+      sender: aiUser._id,
+    });
+  }
+
+  publishAiMessage(req, { chat, answer: message.content, message });
+
+  return res.status(200).json({
+    success: true,
+    messageId: message._id,
+    realtimeDelivered: getSockets(chat.members.map((member) => member.toString())).length > 0,
+  });
+});
+
+/** Deletes your own private AI answer (persisted preview cleanup). */
+const deleteAiMessage = TryCatch(async (req, res, next) => {
+  const { messageId } = req.params;
+
+  if (!messageId) return next(new ErrorHandler("Message ID is required", 400));
+
+  const message = await messageModel.findById(messageId);
+
+  if (!message) return next(new ErrorHandler("Message not found", 404));
+
+  if (String(message.privateTo || "") !== String(req.userId)) {
+    return next(new ErrorHandler("Only your own private AI answer can be deleted", 403));
+  }
+
+  await message.deleteOne();
+
+  return res.status(200).json({ success: true });
+});
+
+/** Broadcasts an AI message to the given members. */
+const publishAiMessage = (req, { chat, answer, message }, members) => {
+  const targets = members || chat.members;
+  const messageForRealTime = {
+    _id: message._id,
+    attachments: [],
+    content: answer,
+    sender: { _id: message.sender, name: "AI Assistant" },
+    chat: message.chat,
+    createdAt: message.createdAt,
+    ...(message.privateTo ? { privateTo: message.privateTo } : {}),
+  };
+
+  emitEvent(req, NEW_MESSAGE, targets, {
+    chatId: String(message.chat),
+    message: messageForRealTime,
+  });
+  emitEvent(req, NEW_MESSAGE_ALERT, targets, { chatId: String(message.chat) });
+};
+
 export {
   addGroupMembers,
   deleteChat,
@@ -1239,4 +1454,7 @@ export {
   sendAttachments,
   sendMessage,
   suggestMessages,
+  askAi,
+  shareAi,
+  deleteAiMessage,
 };

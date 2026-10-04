@@ -7,6 +7,7 @@
   "scripts": {
     "test": "vitest",
     "start": "node app.js",
+    "predev": "kill-port 4000",
     "dev": "nodemon app.js",
     "cleanup:anonymous": "node scripts/delete-legacy-anonymous-messages.js",
     "ensure:anonymous-inbox": "node scripts/ensure-anonymous-inbox-chats.js"
@@ -39,6 +40,7 @@
     "@faker-js/faker": "^9.6.0",
     "babel-jest": "^30.3.0",
     "jest": "^30.3.0",
+    "kill-port": "^2.0.1",
     "mongodb-memory-server": "^11.0.1",
     "nodemon": "^3.1.9",
     "socket.io-client": "^4.8.3",

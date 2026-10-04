@@ -16,6 +16,9 @@ import {
   sendAttachments,
   sendMessage,
   suggestMessages,
+  askAi,
+  shareAi,
+  deleteAiMessage,
 } from "../controllers/chat.controller.js";
 import { isAuthenticated } from "../middlewares/auth.js";
 import { attachmentsMulter } from "../middlewares/multer.js";
@@ -38,6 +41,10 @@ chatRouter.post("/ask-and-record", askAndRecord);
 chatRouter.post("/sendMessage", sendMessage);
 
 chatRouter.use(isAuthenticated);
+
+chatRouter.post("/ask-ai", askAi);
+chatRouter.post("/ask-ai/share", shareAi);
+chatRouter.delete("/ai-message/:messageId", deleteAiMessage);
 
 chatRouter.put("/anonymous-request", sendAnonymousFriendRequest);
 chatRouter.put("/accept-friend-request", acceptFriendRequest);

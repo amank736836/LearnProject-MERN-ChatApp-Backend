@@ -19,6 +19,10 @@ const chatSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    aiEnabled: {
+      type: Boolean,
+      default: true,
+    },
     creator: {
       type: Types.ObjectId,
       ref: "User",
