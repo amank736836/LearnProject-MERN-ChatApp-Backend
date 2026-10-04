@@ -23,7 +23,7 @@ import {
   getSockets,
   uploadFilesToCloudinary,
 } from "../utils/features.js";
-import { markBoardQuestionAnswered } from "../utils/boardAnswers.js";
+import { markBoardQuestionAnswered, resolveAskHost } from "../utils/boardAnswers.js";
 import { askNvidiaWithContext } from "../utils/nvidiaAI.js";
 
 const getTokenUserId = (decodedData) => decodedData?.id || decodedData?._id;
@@ -732,6 +732,7 @@ const storeAndDeliverMessage = async ({
   sender,
   replyTo,
   forceAnonymous = false,
+  host = null,
 }) => {
   const user = await userModel.findOne({ username });
 
@@ -813,6 +814,7 @@ const storeAndDeliverMessage = async ({
     sender: senderIdForMessage,
     isAnonymous: isAnonymousForMessage,
     attachments: [],
+    ...(host ? { host } : {}),
     replyTo: replyTo
       ? {
           senderName: replyTo.senderName || "",
@@ -1002,6 +1004,12 @@ const askAndRecord = TryCatch(async (req, res, next) => {
     legacyNormalizedQuestion,
   ].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
 
+  const askHost = resolveAskHost({
+    host: req.body?.host,
+    origin: req.headers?.origin,
+    referer: req.headers?.referer,
+  });
+
   let existing = await suggestedQuestionModel.findOne({
     targetUsername: normalizedUsername,
     normalizedQuestion: { $in: normalizedQuestionCandidates },
@@ -1010,7 +1018,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
   if (existing?.answer?.trim()) {
     existing = await suggestedQuestionModel.findOneAndUpdate(
       { _id: existing._id },
-      { $inc: { askedCount: 1 } },
+      { $inc: { askedCount: 1 }, $addToSet: { hosts: askHost } },
       { new: true }
     );
 
@@ -1042,7 +1050,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
   if (existing && (existing.askedCount || 0) > 0) {
     existing = await suggestedQuestionModel.findOneAndUpdate(
       { _id: existing._id },
-      { $inc: { askedCount: 1 } },
+      { $inc: { askedCount: 1 }, $addToSet: { hosts: askHost } },
       { new: true }
     );
 
@@ -1079,7 +1087,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
           question: trimmedQuestion,
           normalizedQuestion,
         },
-        $inc: { askedCount: 1 },
+        $inc: { askedCount: 1 }, $addToSet: { hosts: askHost },
       },
       { new: true }
     );
@@ -1095,7 +1103,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
             answer: "",
             answeredAt: null,
           },
-          $inc: { askedCount: 1 },
+          $inc: { askedCount: 1 }, $addToSet: { hosts: askHost },
         },
         { upsert: true, new: true }
       );
@@ -1113,7 +1121,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
       if (existing && (existing.askedCount || 0) > 0) {
         existing = await suggestedQuestionModel.findOneAndUpdate(
           { _id: existing._id },
-          { $inc: { askedCount: 1 } },
+          { $inc: { askedCount: 1 }, $addToSet: { hosts: askHost } },
           { new: true }
         );
 
@@ -1150,7 +1158,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
               question: trimmedQuestion,
               normalizedQuestion,
             },
-            $inc: { askedCount: 1 },
+            $inc: { askedCount: 1 }, $addToSet: { hosts: askHost },
           },
           { new: true }
         );
@@ -1175,6 +1183,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
       sender: senderFromCookie,
       replyTo,
       forceAnonymous: true,
+      host: askHost,
     });
 
     messageSent = Boolean(deliveryResult?.message?._id);
@@ -1225,6 +1234,11 @@ const sendMessage = TryCatch(async (req, res, next) => {
     content,
     sender: senderFromCookie,
     replyTo,
+    host: resolveAskHost({
+      host: req.body?.host,
+      origin: req.headers?.origin,
+      referer: req.headers?.referer,
+    }),
   });
 
   return res.status(200).json({

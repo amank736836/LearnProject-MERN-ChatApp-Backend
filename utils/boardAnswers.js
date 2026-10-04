@@ -25,11 +25,36 @@ export const getNormalizedQuestionCandidates = (value = "") =>
   ].filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i);
 
 /**
- * When the board owner replies to a question on their board inbox,
- * mark the matching SuggestedQuestion as answered so it leaves the
- * priority queue. Board inbox chats reuse the owner's user _id as the
- * chat _id, so replies in any other chat are ignored. Never throws.
+ * Normalizes a website host for attribution ("https://Example.com:3000/x"
+ * -> "example.com"). Unparseable values become "direct".
  */
+export const sanitizeHost = (value = "") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "direct";
+
+  let host = raw;
+  const originMatch = raw.match(/^https?:\/\/([^/:?#]+)/);
+  if (originMatch) {
+    host = originMatch[1];
+  } else {
+    host = raw.split(/[/:?#]/)[0];
+  }
+
+  host = host.replace(/\.+$/, "").trim();
+
+  if (!host || host.length > 100 || !/^[a-z0-9.-]+$/.test(host)) return "direct";
+  if (!host.includes(".") && host !== "localhost") return "direct";
+  return host;
+};
+
+/** Picks the ask origin: explicit body.host wins, else Origin/Referer headers. */
+export const resolveAskHost = ({ host, origin, referer } = {}) => {
+  const explicit = sanitizeHost(host);
+  if (explicit !== "direct") return explicit;
+  const fromOrigin = sanitizeHost(origin);
+  if (fromOrigin !== "direct") return fromOrigin;
+  return sanitizeHost(referer);
+};
 export const markBoardQuestionAnswered = async ({
   chatId,
   replyContent,

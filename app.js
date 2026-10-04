@@ -11,6 +11,7 @@ import { isSocketAuthenticated } from "./middlewares/auth.js";
 import { errorMiddleware, TryCatch } from "./middlewares/error.js";
 import messageModel from "./models/message.models.js";
 import chatModel from "./models/chat.models.js";
+import { resolveAskHost } from "./utils/boardAnswers.js";
 import adminRouter from "./routes/admin.routes.js";
 import chatRouter from "./routes/chat.routes.js";
 import userRouter from "./routes/user.routes.js";
@@ -212,6 +213,10 @@ io.on(
         chat: chatId,
         sender: user._id,
         attachments: [],
+        host: resolveAskHost({
+          origin: socket.handshake.headers?.origin,
+          referer: socket.handshake.headers?.referer,
+        }),
         replyTo: replyTo
           ? {
               senderName: replyTo.senderName || "",

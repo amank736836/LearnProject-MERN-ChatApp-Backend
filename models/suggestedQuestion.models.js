@@ -25,6 +25,12 @@ const suggestedQuestionSchema = new Schema(
       default: 0,
       min: 0,
     },
+    // Distinct websites this question was asked from (per-site filtering).
+    hosts: {
+      type: [String],
+      default: [],
+      index: true,
+    },
     answer: {
       type: String,
       default: "",

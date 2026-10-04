@@ -7,6 +7,14 @@ const messageSchema = new Schema(
       ref: "User",
       required: true,
     },
+    // Website the ask came from (Origin header), for per-site filtering.
+    host: {
+      type: String,
+      default: null,
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     // Set only for private AI answers: visible solely to this user.
     privateTo: {
       type: Types.ObjectId,
